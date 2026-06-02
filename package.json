@@ -1,0 +1,16 @@
+{
+  "name": "catchthevibe-backend",
+  "version": "1.0.0",
+  "description": "CatchTheVibe backend API — repo provisioning and zip download",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "@octokit/rest": "^21.0.0",
+    "express": "^4.19.0",
+    "dotenv": "^16.4.0"
+  }
+}
