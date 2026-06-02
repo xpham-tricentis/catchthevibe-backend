@@ -62,8 +62,13 @@ export async function waitForRepoReady(owner, repo) {
   const deadline = Date.now() + timeout;
 
   while (Date.now() < deadline) {
-    const { data: commits } = await octokit.repos.listCommits({ owner, repo, per_page: 2 });
-    if (commits.length >= 2) return;
+    try {
+      const { data: commits } = await octokit.repos.listCommits({ owner, repo, per_page: 2 });
+      if (commits.length >= 2) return;
+    } catch (err) {
+      // 409 = repo exists but git is not yet initialised — keep waiting
+      if (err.status !== 409) throw err;
+    }
     await new Promise(resolve => setTimeout(resolve, interval));
   }
 
