@@ -1,5 +1,5 @@
 import express from 'express';
-import { createRepoFromTemplate, getRepoZip, waitForRepoReady } from '../services/github.js';
+import { buildRepoName, createRepoFromTemplate, getRepoZip, waitForRepoReady } from '../services/github.js';
 
 const router = express.Router();
 
@@ -25,12 +25,22 @@ router.post('/download', async (req, res) => {
 
   const trimmed = projectName.trim();
 
-  if (trimmed.length < 2) {
-    return res.status(400).json({ error: 'projectName must be at least 2 characters' });
+  if (!trimmed) {
+    return res.status(400).json({ error: 'projectName cannot be empty' });
   }
 
-  if (trimmed.length > 100) {
-    return res.status(400).json({ error: 'projectName must be 100 characters or fewer' });
+  // Compute and validate the full repo name before hitting GitHub.
+  let repoName;
+  try {
+    ({ repoName } = buildRepoName(trimmed));
+  } catch {
+    return res.status(400).json({ error: 'projectName produced an empty repo name after sanitization' });
+  }
+
+  if (repoName.length < 10 || repoName.length > 100) {
+    return res.status(400).json({
+      error: `Resulting repo name "${repoName}" must be between 10 and 100 characters`,
+    });
   }
 
   try {

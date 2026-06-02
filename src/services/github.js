@@ -13,6 +13,26 @@ function getOctokit() {
 }
 
 // ---------------------------------------------------------------------------
+// Build the repo name from a project name.
+// Convention: vibe-{team}-{app}
+// GitHub rules: letters, numbers, hyphens, underscores, periods. Max 100 chars.
+// Returns { repoName, appSegment, team } — throws if appSegment is empty.
+// ---------------------------------------------------------------------------
+export function buildRepoName(projectName) {
+  const team       = process.env.GITHUB_TEAM_NAME || 'dev';
+  const appSegment = projectName
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9._-]/g, '')
+    .replace(/^[._-]+|[._-]+$/g, '');
+
+  if (!appSegment) throw new Error('projectName produced an empty repo name after sanitization');
+
+  return { repoName: `vibe-${team}-${appSegment}`, appSegment, team };
+}
+
+// ---------------------------------------------------------------------------
 // Create a new repo from the template repo
 // ---------------------------------------------------------------------------
 export async function createRepoFromTemplate(projectName) {
@@ -26,14 +46,7 @@ export async function createRepoFromTemplate(projectName) {
     throw new Error('GITHUB_TEMPLATE_OWNER, GITHUB_TEMPLATE_REPO, and GITHUB_TARGET_OWNER must be set');
   }
 
-  // Sanitize: lowercase, replace spaces/underscores with hyphens, strip anything else
-  const repoName = projectName
-    .toLowerCase()
-    .replace(/[\s_]+/g, '-')
-    .replace(/[^a-z0-9-]/g, '')
-    .slice(0, 100);
-
-  if (!repoName) throw new Error('Project name produced an empty repo name after sanitization');
+  const { repoName } = buildRepoName(projectName);
 
   const { data } = await octokit.repos.createUsingTemplate({
     template_owner: templateOwner,
