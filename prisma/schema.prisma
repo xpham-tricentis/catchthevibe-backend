@@ -1,0 +1,88 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+// ---------------------------------------------------------------------------
+// User
+// Populated on first authenticated request. Identity sourced from SSO headers.
+// ---------------------------------------------------------------------------
+model User {
+  id          String   @id                  // Entra ID email
+  name        String
+  email       String   @unique
+  team        String?
+  firstLogin  DateTime @default(now())
+  lastLogin   DateTime @updatedAt
+  apps        App[]    @relation("owner")
+  createdApps App[]    @relation("creator")
+}
+
+// ---------------------------------------------------------------------------
+// App
+// Created at download (status: provisioning). zone/stack/hosting/hostname
+// are null until the Team Agent determines them at upload.
+// ---------------------------------------------------------------------------
+model App {
+  id           String   @id @default(cuid())
+  name         String   @unique              // repo name: vibe-{team}-{app}
+  displayName  String?                       // human-readable, set at upload
+  team         String
+  zone         String?                       // green | yellow | red — set at upload
+  hosting      String?                       // webapp | aks — set at upload
+  stack        String?                       // react-spa | node-api | python-api | static-site — set at upload
+  status       String   @default("provisioning") // provisioning | active | decommissioning | archived
+  hostname     String?  @unique              // {app}.build.tricentis.com — set at upload
+  customDomain String?
+  repoUrl      String?                       // set after GitHub repo is created
+  costCenter   String
+  ownerId      String
+  owner        User     @relation("owner",   fields: [ownerId],   references: [id])
+  creatorId    String
+  creator      User     @relation("creator", fields: [creatorId], references: [id])
+  gateway      String   @default("gateway-01")
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  deployments  Deployment[]
+  accessGroups AccessGroup[]
+}
+
+// ---------------------------------------------------------------------------
+// Deployment
+// One record per CI pipeline run. Created at upload, updated as pipeline
+// progresses through scan → build → deploy stages.
+// ---------------------------------------------------------------------------
+model Deployment {
+  id          String    @id @default(cuid())
+  appId       String
+  app         App       @relation(fields: [appId], references: [id])
+  imageTag    String                          // sha-{hash}
+  status      String                          // pending | scanning | building | deploying | live | failed
+  triggeredBy String                          // user email
+  pipelineUrl String?                         // GitHub Actions run URL
+  argoStatus  String?                         // synced | progressing | degraded | unknown
+  env0Status  String?                         // planning | applying | succeeded | failed
+  startedAt   DateTime  @default(now())
+  completedAt DateTime?
+}
+
+// ---------------------------------------------------------------------------
+// AccessGroup
+// Entra ID security groups granted access to an app via the portal.
+// ---------------------------------------------------------------------------
+model AccessGroup {
+  id        String   @id @default(cuid())
+  appId     String
+  app       App      @relation(fields: [appId], references: [id])
+  groupId   String                            // Entra ID object ID
+  groupName String                            // e.g. sg-quality-engineering
+  addedBy   String                            // user email
+  addedAt   DateTime @default(now())
+
+  @@unique([appId, groupId])
+}

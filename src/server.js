@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import auth from './middleware/auth.js';
 import appsRouter from './routes/apps.js';
 
 const app = express();
@@ -10,8 +11,8 @@ app.use(express.json());
 // Health check
 app.get('/ping', (_req, res) => res.json({ ok: true }));
 
-// Routes
-app.use('/api/apps', appsRouter);
+// Routes (all require auth)
+app.use('/api/apps', auth, appsRouter);
 
 // 404 fallback
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));
