@@ -39,7 +39,7 @@ model App {
   hostname     String?  @unique              // {app}.build.tricentis.com — set at upload
   customDomain String?
   repoUrl      String?                       // set after GitHub repo is created
-  costCenter   String
+  costCenter   String?                      // set at upload when full form is submitted
   ownerId      String
   owner        User     @relation("owner",   fields: [ownerId],   references: [id])
   creatorId    String
