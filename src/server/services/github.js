@@ -89,6 +89,20 @@ export async function waitForRepoReady(owner, repo) {
 }
 
 // ---------------------------------------------------------------------------
+// Commit manifest.yaml to a repo
+// ---------------------------------------------------------------------------
+export async function writeManifest(owner, repo, content) {
+  const octokit = getOctokit();
+  await octokit.repos.createOrUpdateFileContents({
+    owner,
+    repo,
+    path: 'manifest.yaml',
+    message: 'chore: add app manifest',
+    content: Buffer.from(content, 'utf8').toString('base64'),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Fetch the repo zip — DEV path (Octokit + PAT)
 // ---------------------------------------------------------------------------
 // Uses Octokit's raw request with parseSuccessResponseBody: false.

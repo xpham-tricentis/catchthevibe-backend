@@ -873,70 +873,403 @@ function Expandable({ title, icon, children, defaultOpen = false }) {
 
 // ─── Page Components (Aura-themed) ────────────────────────────────────────
 
-function BuildPage() {
-  const [status, setStatus] = useState(null);
+async function* parseSSE(reader) {
+  const decoder = new TextDecoder();
+  let buffer = '';
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const events = buffer.split('\n\n');
+    buffer = events.pop();
+    for (const block of events) {
+      if (!block.trim()) continue;
+      const lines = block.split('\n');
+      let eventType = 'message';
+      let data = null;
+      for (const line of lines) {
+        if (line.startsWith('event: ')) eventType = line.slice(7).trim();
+        else if (line.startsWith('data: ')) { try { data = JSON.parse(line.slice(6)); } catch {} }
+      }
+      if (data !== null) yield { type: eventType, data };
+    }
+  }
+}
 
-  const handleStart = async () => {
-    setStatus("launching");
+function extractManifest(text) {
+  const m = text.match(/```yaml\n([\s\S]*?)```/);
+  return m ? m[1].trim() : null;
+}
+
+function BuildPage({ setSection }) {
+  const [phase, setPhase] = useState('intro'); // 'intro' | 'chatting' | 'complete'
+  const [sessionId, setSessionId] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState('');
+  const [streaming, setStreaming] = useState(false);
+  const [streamText, setStreamText] = useState('');
+  const [error, setError] = useState(null);
+  const [manifest, setManifest] = useState(null);
+  const [projectName, setProjectName] = useState('');
+  const [creating, setCreating] = useState(false);
+  const [repo, setRepo] = useState(null);
+  const [createError, setCreateError] = useState(null);
+  const bottomRef = useRef(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, streamText]);
+
+  async function consumeStream(response, currentSessionId) {
+    const reader = response.body.getReader();
+    let acc = '';
+    for await (const { type, data } of parseSSE(reader)) {
+      if (type === 'text') {
+        acc += data.text;
+        setStreamText(acc);
+      } else if (type === 'session') {
+        setSessionId(data.sessionId);
+      } else if (type === 'error') {
+        setError(data.message);
+        setStreaming(false);
+        setStreamText('');
+        return;
+      } else if (type === 'done') {
+        const yaml = extractManifest(acc);
+        setMessages(prev => [...prev, { role: 'assistant', text: acc }]);
+        setStreamText('');
+        setStreaming(false);
+        if (yaml) {
+          setManifest(yaml);
+          setPhase('complete');
+        }
+      }
+    }
+  }
+
+  const startInterview = async () => {
+    setError(null);
+    setStreaming(true);
+    setPhase('chatting');
     try {
-      const res = await fetch("/api/apps/scope", { method: "POST" });
-      if (!res.ok) throw new Error("failed");
-      setStatus("started");
+      const res = await fetch('/api/apps/scope', { method: 'POST' });
+      if (!res.ok) throw new Error('start failed');
+      await consumeStream(res, null);
     } catch {
-      setStatus("error");
+      setError('Failed to start the interview. Please try again.');
+      setStreaming(false);
+      setPhase('intro');
     }
   };
 
-  return (
-    <div>
-      <h1 style={{ fontSize: 24, fontWeight: 800, color: T.textPrimary, marginBottom: 4 }}>Build an App</h1>
-      <p style={{ color: T.textSecondary, fontSize: 14, marginBottom: 32 }}>
-        Answer a few questions and we'll figure out what you need — governance zone, architecture pattern, and the right template to get you started.
-      </p>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 40 }}>
-        {[
-          { icon: MessageSquare, title: "1. Tell us your idea", desc: "Describe what you want to build in plain language — no technical detail needed." },
-          { icon: Shield, title: "2. We classify it", desc: "Claude determines your governance zone (Green, Yellow, or Red) based on what your app touches." },
-          { icon: Rocket, title: "3. Get your repo", desc: "We generate a manifest.yaml and provision a pre-configured GitHub repo for your team." },
-        ].map(step => (
-          <Card key={step.title} hover={false} style={{ borderTop: `3px solid ${T.warning}` }}>
-            <step.icon size={22} color={T.warning} style={{ marginBottom: 10 }} />
-            <div style={{ fontSize: 14, fontWeight: 700, color: T.textPrimary, marginBottom: 4 }}>{step.title}</div>
-            <div style={{ fontSize: 13, color: T.textSecondary, lineHeight: 1.5 }}>{step.desc}</div>
-          </Card>
-        ))}
-      </div>
-      <Card hover={false} style={{ background: T.warningLight, border: `1px solid ${T.warningBorder}`, padding: 32, textAlign: "center" }}>
-        <Lightbulb size={36} color={T.warning} style={{ marginBottom: 16 }} />
-        <div style={{ fontSize: 18, fontWeight: 700, color: T.textPrimary, marginBottom: 8 }}>Ready to start?</div>
-        <div style={{ fontSize: 14, color: T.textSecondary, marginBottom: 24, maxWidth: 480, margin: "0 auto 24px" }}>
-          Claude will walk you through a short interview to scope your app. It takes about 5 minutes.
+  const createRepo = async () => {
+    const name = projectName.trim();
+    if (!name || creating) return;
+    setCreating(true);
+    setCreateError(null);
+    try {
+      const res = await fetch('/api/apps', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ projectName: name, manifest }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setCreateError(data.error || 'Failed to create repo. Please try again.');
+        setCreating(false);
+        return;
+      }
+      setRepo(data);
+    } catch {
+      setCreateError('Failed to create repo. Please try again.');
+      setCreating(false);
+    }
+  };
+
+  const sendMessage = async () => {
+    const text = input.trim();
+    if (!text || streaming || !sessionId) return;
+    setInput('');
+    setMessages(prev => [...prev, { role: 'user', text }]);
+    setStreaming(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/apps/scope/${sessionId}/message`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: text }),
+      });
+      if (!res.ok) throw new Error('send failed');
+      await consumeStream(res, sessionId);
+    } catch {
+      setError('Failed to send your message. Please try again.');
+      setStreaming(false);
+    }
+  };
+
+  if (phase === 'intro') {
+    return (
+      <div>
+        <h1 style={{ fontSize: 24, fontWeight: 800, color: T.textPrimary, marginBottom: 4 }}>Build an App</h1>
+        <p style={{ color: T.textSecondary, fontSize: 14, marginBottom: 32 }}>
+          Answer a few questions and we'll figure out what you need — governance zone, architecture pattern, and the right template to get you started.
+        </p>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 40 }}>
+          {[
+            { icon: MessageSquare, title: "1. Tell us your idea", desc: "Describe what you want to build in plain language — no technical detail needed." },
+            { icon: Shield, title: "2. We classify it", desc: "Claude determines your governance zone (Green, Yellow, or Red) based on what your app touches." },
+            { icon: Rocket, title: "3. Get your repo", desc: "We generate a manifest.yaml and provision a pre-configured GitHub repo for your team." },
+          ].map(step => (
+            <Card key={step.title} hover={false} style={{ borderTop: `3px solid ${T.warning}` }}>
+              <step.icon size={22} color={T.warning} style={{ marginBottom: 10 }} />
+              <div style={{ fontSize: 14, fontWeight: 700, color: T.textPrimary, marginBottom: 4 }}>{step.title}</div>
+              <div style={{ fontSize: 13, color: T.textSecondary, lineHeight: 1.5 }}>{step.desc}</div>
+            </Card>
+          ))}
         </div>
-        {status === "error" && (
-          <div style={{ fontSize: 13, color: T.error, marginBottom: 16 }}>Something went wrong — please try again.</div>
-        )}
-        {status === "started" ? (
-          <div style={{ fontSize: 14, color: T.success, fontWeight: 600 }}>
-            <CheckCircle size={16} style={{ marginRight: 6, verticalAlign: "middle" }} />
-            Session started — check your Claude Code window.
+        <Card hover={false} style={{ background: T.warningLight, border: `1px solid ${T.warningBorder}`, padding: 32, textAlign: "center" }}>
+          <Lightbulb size={36} color={T.warning} style={{ marginBottom: 16 }} />
+          <div style={{ fontSize: 18, fontWeight: 700, color: T.textPrimary, marginBottom: 8 }}>Ready to start?</div>
+          <div style={{ fontSize: 14, color: T.textSecondary, marginBottom: 24, maxWidth: 480, margin: "0 auto 24px" }}>
+            Claude will walk you through a short interview to scope your app. It takes about 5 minutes.
           </div>
-        ) : (
           <button
-            onClick={handleStart}
-            disabled={status === "launching"}
+            onClick={startInterview}
             style={{
-              background: status === "launching" ? T.textDisabled : T.warning,
-              color: "#fff", border: "none", borderRadius: T.radiusSm,
-              padding: "12px 32px", fontWeight: 700, fontSize: 15,
-              cursor: status === "launching" ? "default" : "pointer",
+              background: T.warning, color: "#fff", border: "none",
+              borderRadius: T.radiusSm, padding: "12px 32px",
+              fontWeight: 700, fontSize: 15, cursor: "pointer",
               display: "inline-flex", alignItems: "center", gap: 8,
+              fontFamily: T.font,
             }}
           >
             <Lightbulb size={18} />
-            {status === "launching" ? "Starting session…" : "Start the interview"}
+            Start the interview
           </button>
+        </Card>
+      </div>
+    );
+  }
+
+  if (phase === 'complete') {
+    if (repo) {
+      return (
+        <div>
+          <h1 style={{ fontSize: 24, fontWeight: 800, color: T.textPrimary, marginBottom: 4 }}>Repo Created</h1>
+          <p style={{ color: T.textSecondary, fontSize: 14, marginBottom: 32 }}>Your repo is ready. Clone it and start building.</p>
+          <Card hover={false} style={{ background: T.successLight, border: `1px solid ${T.successBorder}`, padding: 24, marginBottom: 24 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+              <CheckCircle size={20} color={T.success} />
+              <span style={{ fontWeight: 700, color: T.textPrimary, fontSize: 15 }}>{repo.repoName}</span>
+            </div>
+            <a href={repo.repoUrl} target="_blank" rel="noreferrer" style={{ fontSize: 13, color: T.primary, display: "flex", alignItems: "center", gap: 6, marginBottom: 16 }}>
+              <ExternalLink size={13} />
+              {repo.repoUrl}
+            </a>
+            <pre style={{
+              background: T.bgPage, border: `1px solid ${T.divider}`,
+              borderRadius: T.radiusMd, padding: "10px 14px", margin: 0,
+              fontFamily: T.monoFont, fontSize: 13, color: T.textPrimary,
+              overflowX: "auto",
+            }}>git clone {repo.cloneUrl}</pre>
+          </Card>
+          <button
+            onClick={() => setSection("myapps")}
+            style={{
+              background: T.primary, color: "#fff", border: "none",
+              borderRadius: T.radiusSm, padding: "10px 24px",
+              fontWeight: 600, fontSize: 14, cursor: "pointer",
+              display: "inline-flex", alignItems: "center", gap: 8,
+              fontFamily: T.font,
+            }}
+          >
+            <Rocket size={16} />
+            View My Apps
+          </button>
+        </div>
+      );
+    }
+
+    return (
+      <div>
+        <h1 style={{ fontSize: 24, fontWeight: 800, color: T.textPrimary, marginBottom: 4 }}>Name Your Project</h1>
+        <p style={{ color: T.textSecondary, fontSize: 14, marginBottom: 32 }}>
+          Almost there. Give your project a name and we'll provision your GitHub repo.
+        </p>
+        <Card hover={false} style={{ background: T.successLight, border: `1px solid ${T.successBorder}`, marginBottom: 32, padding: 24 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+            <CheckCircle size={20} color={T.success} />
+            <span style={{ fontWeight: 700, color: T.textPrimary, fontSize: 15 }}>Manifest generated</span>
+          </div>
+          <pre style={{
+            background: T.bgPage, border: `1px solid ${T.divider}`,
+            borderRadius: T.radiusMd, padding: 16,
+            fontFamily: T.monoFont, fontSize: 12,
+            color: T.textPrimary, overflowX: "auto", margin: 0,
+            whiteSpace: "pre", lineHeight: 1.6,
+          }}>{manifest}</pre>
+        </Card>
+        <Card hover={false} style={{ padding: 24, marginBottom: 16 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: T.textPrimary, marginBottom: 4 }}>What would you like to name your project?</div>
+          <div style={{ fontSize: 13, color: T.textSecondary, marginBottom: 16 }}>
+            This becomes the repo name: <span style={{ fontFamily: T.monoFont }}>vibe-{"{team}"}-{"{your-name}"}</span>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <input
+              type="text"
+              value={projectName}
+              onChange={e => setProjectName(e.target.value)}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); createRepo(); } }}
+              disabled={creating}
+              placeholder="e.g. deal-tracker"
+              style={{
+                flex: 1, padding: "10px 14px",
+                border: `1px solid ${T.inputStroke}`, borderRadius: T.radiusSm,
+                fontSize: 14, outline: "none", fontFamily: T.font,
+                background: creating ? T.bgHover : T.bgPaper,
+                color: T.textPrimary,
+              }}
+            />
+            <button
+              onClick={createRepo}
+              disabled={creating || !projectName.trim()}
+              style={{
+                padding: "10px 20px", border: "none", borderRadius: T.radiusSm,
+                background: creating || !projectName.trim() ? T.textDisabled : T.primary,
+                color: "#fff",
+                cursor: creating || !projectName.trim() ? "default" : "pointer",
+                display: "flex", alignItems: "center", gap: 6,
+                fontWeight: 600, fontSize: 14, fontFamily: T.font,
+                whiteSpace: "nowrap",
+              }}
+            >
+              <Rocket size={15} />
+              {creating ? "Creating…" : "Create my repo"}
+            </button>
+          </div>
+          {createError && (
+            <div style={{ marginTop: 12, fontSize: 13, color: T.error, padding: "8px 12px", background: T.errorLight, border: `1px solid ${T.errorBorder}`, borderRadius: T.radiusSm }}>
+              {createError}
+            </div>
+          )}
+        </Card>
+        <button
+          onClick={() => { setPhase('intro'); setMessages([]); setManifest(null); setSessionId(null); setError(null); setProjectName(''); setRepo(null); setCreateError(null); }}
+          style={{
+            background: "transparent", color: T.textSecondary,
+            border: "none", padding: 0,
+            fontWeight: 500, fontSize: 13, cursor: "pointer", fontFamily: T.font,
+          }}
+        >
+          Start over
+        </button>
+      </div>
+    );
+  }
+
+  // chatting phase
+  const visibleMessages = [
+    ...messages,
+    ...(streamText ? [{ role: 'assistant', text: streamText, live: true }] : []),
+  ];
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 200px)", minHeight: 520 }}>
+      <div style={{ marginBottom: 16 }}>
+        <h1 style={{ fontSize: 24, fontWeight: 800, color: T.textPrimary, margin: 0 }}>Build an App</h1>
+        <p style={{ color: T.textSecondary, fontSize: 13, marginTop: 4 }}>Claude is interviewing you to scope your app — answer one question at a time.</p>
+      </div>
+
+      <div style={{
+        flex: 1, overflowY: "auto",
+        border: `1px solid ${T.divider}`, borderRadius: T.radiusMd,
+        background: T.bgSubtle, padding: 16,
+        display: "flex", flexDirection: "column", gap: 12,
+      }}>
+        {visibleMessages.length === 0 && streaming && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 4px" }}>
+            <div style={{
+              width: 28, height: 28, borderRadius: T.radiusCircular,
+              background: T.primaryLight, display: "flex",
+              alignItems: "center", justifyContent: "center", flexShrink: 0,
+            }}>
+              <Brain size={14} color={T.primary} />
+            </div>
+            <span style={{ color: T.textSecondary, fontSize: 13 }}>Starting your interview…</span>
+          </div>
         )}
-      </Card>
+        {visibleMessages.map((msg, i) => (
+          <div key={i} style={{ display: "flex", justifyContent: msg.role === "user" ? "flex-end" : "flex-start", alignItems: "flex-start" }}>
+            {msg.role === "assistant" && (
+              <div style={{
+                width: 28, height: 28, borderRadius: T.radiusCircular,
+                background: T.primaryLight, display: "flex",
+                alignItems: "center", justifyContent: "center",
+                flexShrink: 0, marginRight: 8, marginTop: 2,
+              }}>
+                <Brain size={14} color={T.primary} />
+              </div>
+            )}
+            <div style={{
+              maxWidth: "72%",
+              background: msg.role === "user" ? T.primary : T.bgPaper,
+              color: msg.role === "user" ? "#fff" : T.textPrimary,
+              border: msg.role === "user" ? "none" : `1px solid ${T.divider}`,
+              borderRadius: msg.role === "user"
+                ? `${T.radiusMd}px ${T.radiusMd}px 4px ${T.radiusMd}px`
+                : `${T.radiusMd}px ${T.radiusMd}px ${T.radiusMd}px 4px`,
+              padding: "10px 14px", fontSize: 14, lineHeight: 1.6,
+              whiteSpace: "pre-wrap", wordBreak: "break-word",
+              fontFamily: T.font,
+            }}>
+              {msg.text}
+              {msg.live && <span style={{ color: T.primary, marginLeft: 1 }}>▌</span>}
+            </div>
+          </div>
+        ))}
+        {error && (
+          <div style={{
+            fontSize: 13, color: T.error, padding: "8px 12px",
+            background: T.errorLight, border: `1px solid ${T.errorBorder}`,
+            borderRadius: T.radiusSm,
+          }}>
+            {error}
+          </div>
+        )}
+        <div ref={bottomRef} />
+      </div>
+
+      <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+        <input
+          type="text"
+          value={input}
+          onChange={e => setInput(e.target.value)}
+          onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); sendMessage(); } }}
+          disabled={streaming}
+          placeholder={streaming ? "Claude is thinking…" : "Type your answer and press Enter"}
+          style={{
+            flex: 1, padding: "10px 14px",
+            border: `1px solid ${T.inputStroke}`, borderRadius: T.radiusSm,
+            fontSize: 14, outline: "none", fontFamily: T.font,
+            background: streaming ? T.bgHover : T.bgPaper,
+            color: T.textPrimary,
+          }}
+        />
+        <button
+          onClick={sendMessage}
+          disabled={streaming || !input.trim()}
+          style={{
+            padding: "10px 18px", border: "none", borderRadius: T.radiusSm,
+            background: streaming || !input.trim() ? T.textDisabled : T.primary,
+            color: "#fff", cursor: streaming || !input.trim() ? "default" : "pointer",
+            display: "flex", alignItems: "center", gap: 6,
+            fontWeight: 600, fontSize: 14, fontFamily: T.font,
+          }}
+        >
+          <Send size={16} />
+          Send
+        </button>
+      </div>
     </div>
   );
 }
@@ -3331,7 +3664,7 @@ export default function App() {
       </nav>
       <main style={{ maxWidth: 960, margin: "0 auto", padding: "32px 24px" }}>
         {section === "home" && <HomePage setSection={setSection} />}
-        {section === "build" && <BuildPage />}
+        {section === "build" && <BuildPage setSection={setSection} />}
         {section === "launchpad" && <LaunchpadPage />}
         {section === "governance" && <GovernancePage />}
         {section === "skills" && <SkillsPage />}

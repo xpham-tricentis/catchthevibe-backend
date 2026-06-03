@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import auth from './middleware/auth.js';
+import scopeRouter from './routes/scope.js';
 import appsRouter from './routes/apps.js';
 
 const app = express();
@@ -12,6 +13,8 @@ app.use(express.json());
 app.get('/ping', (_req, res) => res.json({ ok: true }));
 
 // Routes (all require auth)
+// scope must be mounted before /api/apps to avoid prefix-match ambiguity
+app.use('/api/apps/scope', auth, scopeRouter);
 app.use('/api/apps', auth, appsRouter);
 
 // 404 fallback

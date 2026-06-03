@@ -1,5 +1,5 @@
 import express from 'express';
-import { buildRepoName, createRepoFromTemplate, getRepoZip, waitForRepoReady } from '../services/github.js';
+import { buildRepoName, createRepoFromTemplate, getRepoZip, waitForRepoReady, writeManifest } from '../services/github.js';
 import prisma from '../prisma.js';
 
 const router = express.Router();
@@ -14,7 +14,7 @@ const router = express.Router();
 // No zip download — the user clones the repo and vibe-codes locally.
 // ---------------------------------------------------------------------------
 router.post('/', async (req, res) => {
-  const { projectName } = req.body;
+  const { projectName, manifest } = req.body;
 
   // --- 1. Validate input ---
   if (!projectName || typeof projectName !== 'string') {
@@ -72,6 +72,12 @@ router.post('/', async (req, res) => {
     // --- 6. Wait for the Actions bot commit ---
     console.log(`[create] Waiting for repo to be ready: ${repoOwner}/${repoName}`);
     await waitForRepoReady(repoOwner, repoName);
+
+    // --- 6a. Commit manifest.yaml if provided ---
+    if (manifest && typeof manifest === 'string' && manifest.trim()) {
+      console.log(`[create] Writing manifest.yaml to ${repoOwner}/${repoName}`);
+      await writeManifest(repoOwner, repoName, manifest.trim());
+    }
 
     // --- 7. Update App record with repo URL ---
     await prisma.app.update({
