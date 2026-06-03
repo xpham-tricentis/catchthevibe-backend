@@ -5,7 +5,7 @@ node_modules
 
 .DS_Store
 
-pacakge-lock.json
+dist/
 TODO.md
 
 local
