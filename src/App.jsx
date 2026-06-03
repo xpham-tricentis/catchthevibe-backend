@@ -873,6 +873,74 @@ function Expandable({ title, icon, children, defaultOpen = false }) {
 
 // ─── Page Components (Aura-themed) ────────────────────────────────────────
 
+function BuildPage() {
+  const [status, setStatus] = useState(null);
+
+  const handleStart = async () => {
+    setStatus("launching");
+    try {
+      const res = await fetch("/api/apps/scope", { method: "POST" });
+      if (!res.ok) throw new Error("failed");
+      setStatus("started");
+    } catch {
+      setStatus("error");
+    }
+  };
+
+  return (
+    <div>
+      <h1 style={{ fontSize: 24, fontWeight: 800, color: T.textPrimary, marginBottom: 4 }}>Build an App</h1>
+      <p style={{ color: T.textSecondary, fontSize: 14, marginBottom: 32 }}>
+        Answer a few questions and we'll figure out what you need — governance zone, architecture pattern, and the right template to get you started.
+      </p>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 40 }}>
+        {[
+          { icon: MessageSquare, title: "1. Tell us your idea", desc: "Describe what you want to build in plain language — no technical detail needed." },
+          { icon: Shield, title: "2. We classify it", desc: "Claude determines your governance zone (Green, Yellow, or Red) based on what your app touches." },
+          { icon: Rocket, title: "3. Get your repo", desc: "We generate a manifest.yaml and provision a pre-configured GitHub repo for your team." },
+        ].map(step => (
+          <Card key={step.title} hover={false} style={{ borderTop: `3px solid ${T.warning}` }}>
+            <step.icon size={22} color={T.warning} style={{ marginBottom: 10 }} />
+            <div style={{ fontSize: 14, fontWeight: 700, color: T.textPrimary, marginBottom: 4 }}>{step.title}</div>
+            <div style={{ fontSize: 13, color: T.textSecondary, lineHeight: 1.5 }}>{step.desc}</div>
+          </Card>
+        ))}
+      </div>
+      <Card hover={false} style={{ background: T.warningLight, border: `1px solid ${T.warningBorder}`, padding: 32, textAlign: "center" }}>
+        <Lightbulb size={36} color={T.warning} style={{ marginBottom: 16 }} />
+        <div style={{ fontSize: 18, fontWeight: 700, color: T.textPrimary, marginBottom: 8 }}>Ready to start?</div>
+        <div style={{ fontSize: 14, color: T.textSecondary, marginBottom: 24, maxWidth: 480, margin: "0 auto 24px" }}>
+          Claude will walk you through a short interview to scope your app. It takes about 5 minutes.
+        </div>
+        {status === "error" && (
+          <div style={{ fontSize: 13, color: T.error, marginBottom: 16 }}>Something went wrong — please try again.</div>
+        )}
+        {status === "started" ? (
+          <div style={{ fontSize: 14, color: T.success, fontWeight: 600 }}>
+            <CheckCircle size={16} style={{ marginRight: 6, verticalAlign: "middle" }} />
+            Session started — check your Claude Code window.
+          </div>
+        ) : (
+          <button
+            onClick={handleStart}
+            disabled={status === "launching"}
+            style={{
+              background: status === "launching" ? T.textDisabled : T.warning,
+              color: "#fff", border: "none", borderRadius: T.radiusSm,
+              padding: "12px 32px", fontWeight: 700, fontSize: 15,
+              cursor: status === "launching" ? "default" : "pointer",
+              display: "inline-flex", alignItems: "center", gap: 8,
+            }}
+          >
+            <Lightbulb size={18} />
+            {status === "launching" ? "Starting session…" : "Start the interview"}
+          </button>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 function HomePage({ setSection }) {
   const stats = [
     { label: "Active Vibe Apps", value: "23", icon: Rocket, color: T.primary },
@@ -897,8 +965,9 @@ function HomePage({ setSection }) {
         ))}
       </div>
       <h2 style={{ fontSize: 18, fontWeight: 700, color: T.textPrimary, marginBottom: 16 }}>Quick Start</h2>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 40 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 40 }}>
         {[
+          { icon: Lightbulb, title: "Build an App", desc: "Have an idea to improve your business processes? Let us guide you through it.", color: T.warning, section: "build" },
           { icon: Rocket, title: "Launch an App", desc: "Request a repo, pick a pattern, and start building in minutes", color: T.primary, section: "launchpad" },
           { icon: GraduationCap, title: "Learn the Ropes", desc: "Courses on secure prompting, code review, and deployment", color: T.success, section: "skills" },
           { icon: Shield, title: "Know the Rules", desc: "Deployment requirements, approved languages, and zone classification", color: T.purple, section: "governance" },
@@ -3262,6 +3331,7 @@ export default function App() {
       </nav>
       <main style={{ maxWidth: 960, margin: "0 auto", padding: "32px 24px" }}>
         {section === "home" && <HomePage setSection={setSection} />}
+        {section === "build" && <BuildPage />}
         {section === "launchpad" && <LaunchpadPage />}
         {section === "governance" && <GovernancePage />}
         {section === "skills" && <SkillsPage />}
