@@ -64,6 +64,33 @@ try {
 
 const sessions = new Map();
 
+const SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+const SWEEP_INTERVAL_MS = 15 * 60 * 1000;
+
+function getActiveSession(sessionId) {
+  const session = sessions.get(sessionId);
+  if (!session) return null;
+  if (Date.now() - session.lastTouched > SESSION_TTL_MS) {
+    sessions.delete(sessionId);
+    return null;
+  }
+  return session;
+}
+
+setInterval(() => {
+  for (const [id, session] of sessions) {
+    if (Date.now() - session.lastTouched > SESSION_TTL_MS) sessions.delete(id);
+  }
+}, SWEEP_INTERVAL_MS).unref();
+
+export function getSessionMessages(sessionId) {
+  return getActiveSession(sessionId)?.messages ?? null;
+}
+
+export function deleteSession(sessionId) {
+  sessions.delete(sessionId);
+}
+
 function sseWrite(res, event, data) {
   res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
 }
@@ -102,6 +129,7 @@ router.post('/', async (req, res) => {
         ...messages,
         { role: 'assistant', content: finalMsg.content },
       ],
+      lastTouched: Date.now(),
     });
 
     sseWrite(res, 'session', { sessionId });
@@ -123,7 +151,7 @@ router.post('/:sessionId/message', async (req, res) => {
     return res.status(400).json({ error: 'message is required' });
   }
 
-  const session = sessions.get(sessionId);
+  const session = getActiveSession(sessionId);
   if (!session) {
     return res.status(404).json({ error: 'Session not found or expired.' });
   }
@@ -145,6 +173,7 @@ router.post('/:sessionId/message', async (req, res) => {
       ...updatedMessages,
       { role: 'assistant', content: finalMsg.content },
     ];
+    session.lastTouched = Date.now();
 
     sseWrite(res, 'done', {});
     res.end();

@@ -1,8 +1,41 @@
 import express from 'express';
-import { buildRepoName, createRepoFromTemplate, getRepoZip, waitForRepoReady, writeManifest } from '../services/github.js';
+import { buildRepoName, createRepoFromTemplate, getRepoZip, waitForRepoReady, writeManifest, writeTranscript } from '../services/github.js';
+import { deleteSession, getSessionMessages } from './scope.js';
 import prisma from '../prisma.js';
 
 const router = express.Router();
+
+const INITIAL_USER_MESSAGE = "Hi, I'd like to start a new app.";
+
+function extractText(content) {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return String(content ?? '');
+  return content
+    .filter(block => block.type === 'text')
+    .map(block => block.text)
+    .join('\n\n');
+}
+
+function formatTranscript(messages, sessionId) {
+  const trimmed = messages[0]?.content === INITIAL_USER_MESSAGE ? messages.slice(1) : messages;
+  const today = new Date().toISOString().slice(0, 10);
+
+  const blocks = trimmed.map(msg => {
+    const role = msg.role === 'user' ? 'User' : 'Assistant';
+    return `## ${role}\n\n${extractText(msg.content)}\n`;
+  });
+
+  return [
+    '# App Scoping Session Transcript',
+    '',
+    `Generated: ${today}`,
+    `Session ID: ${sessionId}`,
+    '',
+    '---',
+    '',
+    blocks.join('\n---\n\n'),
+  ].join('\n');
+}
 
 // ---------------------------------------------------------------------------
 // POST /api/apps
@@ -14,7 +47,7 @@ const router = express.Router();
 // No zip download — the user clones the repo and vibe-codes locally.
 // ---------------------------------------------------------------------------
 router.post('/', async (req, res) => {
-  const { projectName, manifest } = req.body;
+  const { projectName, manifest, sessionId } = req.body;
 
   // --- 1. Validate input ---
   if (!projectName || typeof projectName !== 'string') {
@@ -79,11 +112,30 @@ router.post('/', async (req, res) => {
       await writeManifest(repoOwner, repoName, manifest.trim());
     }
 
+    // --- 6b. Commit scoping transcript (beta — gated by env var) ---
+    if (process.env.CAPTURE_SCOPING_TRANSCRIPT === 'true' && sessionId) {
+      const messages = getSessionMessages(sessionId);
+      if (messages?.length) {
+        try {
+          console.log(`[create] Writing scoping transcript to ${repoOwner}/${repoName}`);
+          await writeTranscript(repoOwner, repoName, formatTranscript(messages, sessionId));
+        } catch (err) {
+          // Repo already exists — don't fail the request if the transcript commit fails.
+          console.error(`[create] Transcript commit failed: ${err.message}`);
+        }
+      } else {
+        console.warn(`[create] Transcript capture skipped — no session found for ${sessionId}`);
+      }
+    }
+
     // --- 7. Update App record with repo URL ---
     await prisma.app.update({
       where: { id: app.id },
       data:  { repoUrl },
     });
+
+    // --- 8. End the scoping session — its purpose is done ---
+    if (sessionId) deleteSession(sessionId);
 
     console.log(`[create] Done — ${repoUrl}`);
 

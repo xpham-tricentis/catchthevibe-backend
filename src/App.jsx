@@ -971,7 +971,7 @@ function BuildPage({ setSection }) {
       const res = await fetch('/api/apps', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ projectName: name, manifest }),
+        body: JSON.stringify({ projectName: name, manifest, sessionId }),
       });
       const data = await res.json();
       if (!res.ok) {

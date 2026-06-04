@@ -103,6 +103,20 @@ export async function writeManifest(owner, repo, content) {
 }
 
 // ---------------------------------------------------------------------------
+// Commit the scoping session transcript to a repo (beta only)
+// ---------------------------------------------------------------------------
+export async function writeTranscript(owner, repo, content) {
+  const octokit = getOctokit();
+  await octokit.repos.createOrUpdateFileContents({
+    owner,
+    repo,
+    path: '.catchthevibe/scoping-transcript.md',
+    message: 'chore: capture scoping session transcript',
+    content: Buffer.from(content, 'utf8').toString('base64'),
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Fetch the repo zip — DEV path (Octokit + PAT)
 // ---------------------------------------------------------------------------
 // Uses Octokit's raw request with parseSuccessResponseBody: false.
