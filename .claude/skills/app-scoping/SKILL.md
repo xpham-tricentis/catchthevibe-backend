@@ -33,9 +33,11 @@ When invoked from the CatchTheVibe portal, the following values are passed into 
 
 Conduct the interview **one question at a time**. Show the options as a numbered list. Wait for the user's answer before moving on. Do not display all questions at once.
 
+**Keep the interview concise — never ask a question whose answer is already implied by an earlier answer.** Several questions below have explicit skip rules; honor them, and use judgement to skip or fold any further question whose answer is unambiguous from prior context.
+
 Begin with this introduction (or something close to it):
 
-> "Before I set up your new app, I'm going to ask you about 10 short questions. The goal is to figure out what kind of app this is and what shape it should take. No technical knowledge needed — just answer in plain language. Let's go."
+> "Before I set up your new app, I'm going to ask you a handful of short questions. The goal is to figure out what kind of app this is and what shape it should take. No technical knowledge needed — just answer in plain language. Let's go."
 
 ---
 
@@ -130,6 +132,11 @@ Record internally as:
 1. Yes — people will expect it to always be available
 2. No — some downtime is acceptable
 
+**Skip this question and infer the answer from Q4:**
+- Q4 was `downtime_impact: high` → record `sla_expected: true` automatically
+- Q4 was `downtime_impact: low` → record `sla_expected: false` automatically
+- Only ask Q6 when Q4 was `downtime_impact: medium`.
+
 Record internally as:
 - 1 → `sla_expected: true`
 - 2 → `sla_expected: false`
@@ -159,7 +166,7 @@ Record internally as:
 2. Logging in and doing things — clicking, filtering, filling forms, editing
 3. There's no person using it directly — it's driven by another system or a schedule
 
-Skip this question and record `ui_type: none` automatically if Q7 was answered as `trigger: schedule` or `trigger: event`.
+Skip this question and record `ui_type: none` automatically if Q7 was answered as `trigger: schedule`, `trigger: event`, or `trigger: system` — none of those involve a person directly using the app.
 
 Record internally as:
 - 1 → `ui_type: read_only`
@@ -269,6 +276,34 @@ After all questions are answered, compute zone and pattern. Do this silently —
 
 ---
 
+### Extras (compute after zone and pattern — silently)
+
+Extras are additional Azure resources the platform will provision beyond what the standard pattern provides. Compute from interview answers. If none apply, `extras` is an empty list.
+
+| Add this extra | When |
+|---|---|
+| `database` | `persistence: durable` |
+| `background_queue` | `background_work: true` AND `work_type` is `data`, `integration`, or `mixed` |
+| `storage_account` | `persistence: durable` AND `work_type: data` |
+| `key_vault_policy` | `data_sensitivity: regulated` |
+
+Note: `storage_account` and `database` can both be present. `key_vault_policy` can appear alongside any other extra.
+
+---
+
+### Next steps (compute after zone and extras — silently)
+
+`next_steps` is the routing signal the CatchTheVibe portal reads to determine what to show the user after the manifest is confirmed.
+
+| Condition | `next_steps` value |
+|---|---|
+| `zone: red` | `red-escalate` |
+| `zone: yellow` | `yellow-ea-review` |
+| `zone: green` AND extras list is not empty | `green-with-extras` |
+| `zone: green` AND extras list is empty | `green-ready` |
+
+---
+
 ## Review gate
 
 After computing zone and pattern, present a plain-language summary. Do not show the raw field values — translate them for the user.
@@ -288,18 +323,39 @@ Interactive Dashboard — a web app your team logs into to view and manage
 information."]
 
 **What this means for you:**
-• [One implication of the zone — e.g., "It will go through an Enterprise
-  Architecture review before going live."]
+• [One implication of the zone — see zone-specific bullets below.]
 • [One implication of the pattern — e.g., "The tech stack will be React for
   the UI with a Python backend for the data work."]
+• [One bullet per extra, if any — see extras bullets below. Omit this line if
+  extras is empty.]
+
+**What happens next:**
+[One sentence derived from next_steps — see next_steps wording below.]
 
 Does this sound right? If something seems off, tell me what's wrong and I'll adjust.
 ```
+
+**Zone-specific implication bullets:**
+- `green` → "This is a lightweight app — it goes straight through automated checks with no manual review."
+- `yellow` → "Because [reason derived from the Yellow trigger — e.g., 'it saves data' / 'it'll be used across multiple teams'], it will go through an Enterprise Architecture review before going live."
+- `red` → "Because [reason derived from the Red trigger — e.g., 'it needs to be available 24/7' / 'it handles regulated data with writes'], this app requires Senior and SecOps sign-off. CatchTheVibe will route it to the Enterprise Architecture team."
 
 **Zone labels for the summary:**
 - `green` → "A Green-tier"
 - `yellow` → "A Yellow-tier"
 - `red` → "A Red-tier"
+
+**Extras implication bullets (include one per extra, in plain language):**
+- `database` → "Your app will need a dedicated database — the platform will provision one automatically when you deploy."
+- `background_queue` → "It does background processing, so it will need a message queue — the platform handles that at deploy time."
+- `storage_account` → "It stores files or data blobs, so a storage account will be provisioned when you deploy."
+- `key_vault_policy` → "It handles regulated data, so a custom Key Vault access policy will be configured when you deploy."
+
+**next_steps wording:**
+- `green-ready` → "Once you confirm, your repo will be created and you can start building straight away."
+- `green-with-extras` → "Once you confirm, your repo will be created. The extra resources listed above will be provisioned automatically when you deploy."
+- `yellow-ea-review` → "Once you confirm, the portal will open an EA review ticket. You can start building while the review runs — deployment won't be available until it's approved."
+- `red-escalate` → "Once you confirm, the portal will route this to the Enterprise Architecture team. They'll reach out to walk you through the Red-tier approval process."
 
 **If the user pushes back:** Ask which part seems wrong, revisit the relevant question(s), recompute, and show a revised summary. Repeat until the user confirms.
 
@@ -325,17 +381,29 @@ stack:
   # additional entries if paired pattern
 pattern: <pattern-value>
 created: <YYYY-MM-DD>
+
+extras:
+  - <database|background_queue|storage_account|key_vault_policy>
+  # additional entries if multiple extras apply
+  # omit this section entirely if extras is empty
+
+next_steps: <green-ready|green-with-extras|yellow-ea-review|red-escalate>
 ```
 
 Rules:
 - `stack` is always written as a YAML list, even if only one entry.
 - `{{DATE}}` in the comment is today's date in `YYYY-MM-DD` format.
 - `created` is also today's date.
-- Do not include the `# additional entries if paired pattern` comment in the output — that is instruction text only.
+- Do not include the `# additional entries if paired pattern` or `# additional entries if multiple extras apply` comments in the output — those are instruction text only.
+- `extras` is a YAML list. Omit the `extras` field entirely if no extras apply — do not write an empty list.
+- `next_steps` is always a single string value.
 
-After writing the file, tell the user:
+After writing the file, tell the user the next step based on `next_steps`:
 
-> "Your app manifest has been saved to `manifest.yaml`. In the CatchTheVibe portal, this will be used to set up your new repository from the right template. You're all set — the portal will take it from here."
+- `green-ready` → "Your manifest has been saved. Head back to the CatchTheVibe portal — your repo will be created and you can start building."
+- `green-with-extras` → "Your manifest has been saved. Head back to the CatchTheVibe portal — your repo will be created, and the extra resources (listed above) will be provisioned automatically when you deploy."
+- `yellow-ea-review` → "Your manifest has been saved. Head back to the CatchTheVibe portal — it will open an EA review ticket for your app. You can start building in your repo while the review is in progress."
+- `red-escalate` → "Your manifest has been saved. Head back to the CatchTheVibe portal — it will route your app to the Enterprise Architecture team for Red-tier approval."
 
 ---
 
