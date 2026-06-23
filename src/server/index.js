@@ -3,6 +3,7 @@ import express from 'express';
 import auth from './middleware/auth.js';
 import scopeRouter from './routes/scope.js';
 import appsRouter from './routes/apps.js';
+import chatRouter from './routes/chat.js';
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -16,6 +17,7 @@ app.get('/ping', (_req, res) => res.json({ ok: true }));
 // scope must be mounted before /api/apps to avoid prefix-match ambiguity
 app.use('/api/apps/scope', auth, scopeRouter);
 app.use('/api/apps', auth, appsRouter);
+app.use('/api/chat', auth, chatRouter);
 
 // 404 fallback
 app.use((_req, res) => res.status(404).json({ error: 'Not found' }));

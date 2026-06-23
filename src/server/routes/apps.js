@@ -1,5 +1,5 @@
 import express from 'express';
-import { buildRepoName, createRepoFromTemplate, getRepoZip, waitForRepoReady, writeManifest, writeTranscript } from '../services/github.js';
+import { buildRepoName, createRepoFromTemplate, getRepo, getRepoZip, isRepoAdoptable, waitForRepoReady, writeManifest, writeTranscript } from '../services/github.js';
 import { deleteSession, getSessionMessages } from './scope.js';
 import prisma from '../prisma.js';
 
@@ -72,47 +72,47 @@ router.post('/', async (req, res) => {
     });
   }
 
-  // --- 2. Check for name conflict in the database ---
-  const existing = await prisma.app.findUnique({ where: { name: repoName } });
-  if (existing) {
-    return res.status(422).json({ error: 'A project with that name already exists. Choose a different name.' });
-  }
-
   try {
-    // --- 3. Upsert user record ---
-    await prisma.user.upsert({
-      where:  { id: req.user.email },
-      update: { lastLogin: new Date() },
-      create: { id: req.user.email, name: req.user.name, email: req.user.email, team: req.user.team },
-    });
+    // --- 2. Reject if a COMPLETED app already owns this name ---
+    // A finished app always has a DB row, so this is what protects real apps
+    // from ever being touched by the adopt path below.
+    const existing = await prisma.app.findUnique({ where: { name: repoName } });
+    if (existing) {
+      return res.status(422).json({ error: 'A project with that name already exists. Choose a different name.' });
+    }
 
-    // --- 4. Create App record (status: provisioning) ---
-    const app = await prisma.app.create({
-      data: {
-        name:      repoName,
-        team:      req.user.team,
-        status:    'provisioning',
-        ownerId:   req.user.email,
-        creatorId: req.user.email,
-      },
-    });
+    // --- 3. Create the GitHub repo FIRST — nothing is persisted to the DB yet,
+    // so any failure here leaves no orphan row and the next attempt is clean. ---
+    const targetOwner = process.env.GITHUB_TARGET_OWNER;
+    let repoOwner, repoUrl, cloneUrl;
+    try {
+      console.log(`[create] Creating repo: ${repoName}`);
+      ({ repoOwner, repoUrl, cloneUrl } = await createRepoFromTemplate(trimmed));
+      console.log(`[create] Repo created: ${repoUrl}`);
+    } catch (err) {
+      if (err.status !== 422) throw err;
+      // Repo exists on GitHub but (per step 2) has no DB row — almost certainly
+      // an orphan from a prior failed attempt. Adopt it so the flow self-heals,
+      // but only if it's an untouched template clone — never clobber real work.
+      console.warn(`[create] Repo ${repoName} already exists on GitHub — checking if adoptable`);
+      if (!(await isRepoAdoptable(targetOwner, repoName))) {
+        return res.status(422).json({ error: 'A repo with that name already exists. Choose a different name.' });
+      }
+      ({ repoOwner, repoUrl, cloneUrl } = await getRepo(targetOwner, repoName));
+      console.log(`[create] Adopting existing repo: ${repoUrl}`);
+    }
 
-    // --- 5. Create GitHub repo from template ---
-    console.log(`[create] Creating repo: ${repoName}`);
-    const { repoOwner, repoUrl, cloneUrl } = await createRepoFromTemplate(trimmed);
-    console.log(`[create] Repo created: ${repoUrl}`);
-
-    // --- 6. Wait for the Actions bot commit ---
+    // --- 4. Wait for the Actions bot commit ---
     console.log(`[create] Waiting for repo to be ready: ${repoOwner}/${repoName}`);
     await waitForRepoReady(repoOwner, repoName);
 
-    // --- 6a. Commit manifest.yaml if provided ---
+    // --- 5. Commit manifest.yaml if provided (idempotent) ---
     if (manifest && typeof manifest === 'string' && manifest.trim()) {
       console.log(`[create] Writing manifest.yaml to ${repoOwner}/${repoName}`);
       await writeManifest(repoOwner, repoName, manifest.trim());
     }
 
-    // --- 6b. Commit scoping transcript (beta — gated by env var) ---
+    // --- 5a. Commit scoping transcript (beta — gated by env var) ---
     if (process.env.CAPTURE_SCOPING_TRANSCRIPT === 'true' && sessionId) {
       const messages = getSessionMessages(sessionId);
       if (messages?.length) {
@@ -120,7 +120,7 @@ router.post('/', async (req, res) => {
           console.log(`[create] Writing scoping transcript to ${repoOwner}/${repoName}`);
           await writeTranscript(repoOwner, repoName, formatTranscript(messages, sessionId));
         } catch (err) {
-          // Repo already exists — don't fail the request if the transcript commit fails.
+          // Non-fatal — don't fail the request if the transcript commit fails.
           console.error(`[create] Transcript commit failed: ${err.message}`);
         }
       } else {
@@ -128,13 +128,36 @@ router.post('/', async (req, res) => {
       }
     }
 
-    // --- 7. Update App record with repo URL ---
-    await prisma.app.update({
-      where: { id: app.id },
-      data:  { repoUrl },
-    });
+    // --- 6. Persist user + App atomically, only after the repo is ready ---
+    let app;
+    try {
+      const [, createdApp] = await prisma.$transaction([
+        prisma.user.upsert({
+          where:  { id: req.user.email },
+          update: { lastLogin: new Date() },
+          create: { id: req.user.email, name: req.user.name, email: req.user.email, team: req.user.team },
+        }),
+        prisma.app.create({
+          data: {
+            name:      repoName,
+            team:      req.user.team,
+            status:    'provisioning',
+            repoUrl,
+            ownerId:   req.user.email,
+            creatorId: req.user.email,
+          },
+        }),
+      ]);
+      app = createdApp;
+    } catch (err) {
+      // Unique-name race (double-submit / concurrent request) — benign.
+      if (err.code === 'P2002') {
+        return res.status(422).json({ error: 'A project with that name already exists. Choose a different name.' });
+      }
+      throw err;
+    }
 
-    // --- 8. End the scoping session — its purpose is done ---
+    // --- 7. End the scoping session — its purpose is done (best-effort) ---
     if (sessionId) deleteSession(sessionId);
 
     console.log(`[create] Done — ${repoUrl}`);
@@ -153,10 +176,6 @@ router.post('/', async (req, res) => {
 
   } catch (err) {
     console.error('[create] Error:', err.message);
-
-    if (err.status === 422) {
-      return res.status(422).json({ error: 'A repo with that name already exists on GitHub. Choose a different name.' });
-    }
 
     if (err.status === 404) {
       const hint = process.env.NODE_ENV !== 'production'

@@ -913,6 +913,30 @@ stack:
 pattern: interactive-dashboard
 created: 2026-06-23`;
 
+// Minimum length for the app-name portion of the repo name. UX guard only —
+// the server enforces that the full vibe-{team}-{app} name is 10–100 chars.
+const MIN_APP_SLUG_LENGTH = 3;
+
+// Mirror of buildRepoName's sanitization (src/server/services/github.js) so the
+// UI can preview the final slug as the user types.
+function slugifyAppName(name) {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '-')
+    .replace(/[^a-z0-9._-]/g, '')
+    .replace(/^[._-]+|[._-]+$/g, '');
+}
+
+// Lightweight markdown rendering for agent messages: **bold** -> <strong>.
+// Newlines are preserved by the container's white-space: pre-wrap. No deps.
+function FormattedText({ text }) {
+  const parts = text.split(/\*\*(.+?)\*\*/g);
+  return parts.map((part, i) =>
+    i % 2 === 1 ? <strong key={i}>{part}</strong> : <span key={i}>{part}</span>
+  );
+}
+
 function BuildPage({ setSection }) {
   const [phase, setPhase] = useState('intro'); // 'intro' | 'chatting' | 'complete'
   const [sessionId, setSessionId] = useState(null);
@@ -927,10 +951,17 @@ function BuildPage({ setSection }) {
   const [repo, setRepo] = useState(null);
   const [createError, setCreateError] = useState(null);
   const bottomRef = useRef(null);
+  const inputRef = useRef(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, streamText]);
+
+  // Refocus the answer field as soon as the agent finishes, so the user can
+  // type immediately without clicking back into the input.
+  useEffect(() => {
+    if (phase === 'chatting' && !streaming) inputRef.current?.focus();
+  }, [streaming, phase]);
 
   async function consumeStream(response, currentSessionId) {
     const reader = response.body.getReader();
@@ -1122,6 +1153,9 @@ function BuildPage({ setSection }) {
       );
     }
 
+    const appSlug = slugifyAppName(projectName);
+    const slugTooShort = projectName.trim().length > 0 && appSlug.length < MIN_APP_SLUG_LENGTH;
+    const canCreate = appSlug.length >= MIN_APP_SLUG_LENGTH && !creating;
     return (
       <div>
         <h1 style={{ fontSize: 24, fontWeight: 800, color: T.textPrimary, marginBottom: 4 }}>Name Your Project</h1>
@@ -1144,14 +1178,17 @@ function BuildPage({ setSection }) {
         <Card hover={false} style={{ padding: 24, marginBottom: 16 }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: T.textPrimary, marginBottom: 4 }}>What would you like to name your project?</div>
           <div style={{ fontSize: 13, color: T.textSecondary, marginBottom: 16 }}>
-            This becomes the repo name: <span style={{ fontFamily: T.monoFont }}>vibe-{"{team}"}-{"{your-name}"}</span>
+            This becomes the repo name:{" "}
+            <span style={{ fontFamily: T.monoFont, color: appSlug ? T.textPrimary : T.textSecondary }}>
+              vibe-{"{team}"}-{appSlug || "your-name"}
+            </span>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
             <input
               type="text"
               value={projectName}
               onChange={e => setProjectName(e.target.value)}
-              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); createRepo(); } }}
+              onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); if (canCreate) createRepo(); } }}
               disabled={creating}
               placeholder="e.g. deal-tracker"
               style={{
@@ -1164,12 +1201,12 @@ function BuildPage({ setSection }) {
             />
             <button
               onClick={createRepo}
-              disabled={creating || !projectName.trim()}
+              disabled={!canCreate}
               style={{
                 padding: "10px 20px", border: "none", borderRadius: T.radiusSm,
-                background: creating || !projectName.trim() ? T.textDisabled : T.primary,
+                background: !canCreate ? T.textDisabled : T.primary,
                 color: "#fff",
-                cursor: creating || !projectName.trim() ? "default" : "pointer",
+                cursor: !canCreate ? "default" : "pointer",
                 display: "flex", alignItems: "center", gap: 6,
                 fontWeight: 600, fontSize: 14, fontFamily: T.font,
                 whiteSpace: "nowrap",
@@ -1179,6 +1216,11 @@ function BuildPage({ setSection }) {
               {creating ? "Creating…" : "Create my repo"}
             </button>
           </div>
+          {slugTooShort && (
+            <div style={{ marginTop: 12, fontSize: 13, color: T.textSecondary }}>
+              Use at least {MIN_APP_SLUG_LENGTH} letters or numbers for the name.
+            </div>
+          )}
           {createError && (
             <div style={{ marginTop: 12, fontSize: 13, color: T.error, padding: "8px 12px", background: T.errorLight, border: `1px solid ${T.errorBorder}`, borderRadius: T.radiusSm }}>
               {createError}
@@ -1254,7 +1296,7 @@ function BuildPage({ setSection }) {
               whiteSpace: "pre-wrap", wordBreak: "break-word",
               fontFamily: T.font,
             }}>
-              {msg.text}
+              <FormattedText text={msg.text} />
               {msg.live && <span style={{ color: T.primary, marginLeft: 1 }}>▌</span>}
             </div>
           </div>
@@ -1273,6 +1315,8 @@ function BuildPage({ setSection }) {
 
       <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
         <input
+          ref={inputRef}
+          autoFocus
           type="text"
           value={input}
           onChange={e => setInput(e.target.value)}

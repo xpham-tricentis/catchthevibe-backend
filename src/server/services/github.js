@@ -89,16 +89,65 @@ export async function waitForRepoReady(owner, repo) {
 }
 
 // ---------------------------------------------------------------------------
-// Commit manifest.yaml to a repo
+// Fetch basic repo info. Used by the adopt path when the repo already exists.
+// ---------------------------------------------------------------------------
+export async function getRepo(owner, repo) {
+  const octokit = getOctokit();
+  const { data } = await octokit.repos.get({ owner, repo });
+  return {
+    repoName:  data.name,
+    repoOwner: data.owner.login,
+    repoUrl:   data.html_url,
+    cloneUrl:  data.clone_url,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Decide whether an existing repo is safe to adopt.
+//
+// On retry after a failed provisioning attempt, the repo may already exist on
+// GitHub with no DB row. Adopting it lets the flow self-heal — but ONLY if it
+// looks like an untouched template clone (recent, and at most the template +
+// Actions bot commits). Anything with real history is refused so we never
+// commit into a repo that already holds someone's work.
+// ---------------------------------------------------------------------------
+export async function isRepoAdoptable(owner, repo) {
+  const octokit = getOctokit();
+  const MAX_ADOPTABLE_COMMITS = 3;        // template commit + Actions bot commit, with margin
+  const MAX_ADOPTABLE_AGE_MS  = 24 * 60 * 60 * 1000;
+
+  const { data: commits } = await octokit.repos.listCommits({
+    owner, repo, per_page: MAX_ADOPTABLE_COMMITS + 1,
+  });
+  if (commits.length > MAX_ADOPTABLE_COMMITS) return false;
+
+  const { data: meta } = await octokit.repos.get({ owner, repo });
+  const ageMs = Date.now() - new Date(meta.created_at).getTime();
+  return ageMs <= MAX_ADOPTABLE_AGE_MS;
+}
+
+// ---------------------------------------------------------------------------
+// Commit manifest.yaml to a repo. Idempotent: if the file already exists
+// (e.g. on an adopted repo) it is updated rather than failing.
 // ---------------------------------------------------------------------------
 export async function writeManifest(owner, repo, content) {
   const octokit = getOctokit();
+
+  let sha;
+  try {
+    const { data } = await octokit.repos.getContent({ owner, repo, path: 'manifest.yaml' });
+    if (!Array.isArray(data)) sha = data.sha;
+  } catch (err) {
+    if (err.status !== 404) throw err; // 404 = file doesn't exist yet, which is fine
+  }
+
   await octokit.repos.createOrUpdateFileContents({
     owner,
     repo,
     path: 'manifest.yaml',
     message: 'chore: add app manifest',
     content: Buffer.from(content, 'utf8').toString('base64'),
+    ...(sha ? { sha } : {}),
   });
 }
 
