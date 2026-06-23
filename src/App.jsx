@@ -901,6 +901,18 @@ function extractManifest(text) {
   return m ? m[1].trim() : null;
 }
 
+// Dev-only: lets the scoping interview be skipped during local testing (see skipInterview).
+const SAMPLE_MANIFEST = `name: "{{APP_NAME}}"
+owner: "{{USER_EMAIL}}"
+team: "{{USER_TEAM}}"
+cost-center: "{{COST_CENTER}}"
+zone: green
+hosting: webapp
+stack:
+  - react-spa
+pattern: interactive-dashboard
+created: 2026-06-23`;
+
 function BuildPage({ setSection }) {
   const [phase, setPhase] = useState('intro'); // 'intro' | 'chatting' | 'complete'
   const [sessionId, setSessionId] = useState(null);
@@ -960,6 +972,12 @@ function BuildPage({ setSection }) {
       setStreaming(false);
       setPhase('intro');
     }
+  };
+
+  const skipInterview = () => {
+    setManifest(SAMPLE_MANIFEST);
+    setSessionId(null);
+    setPhase('complete');
   };
 
   const createRepo = async () => {
@@ -1046,6 +1064,20 @@ function BuildPage({ setSection }) {
             <Lightbulb size={18} />
             Start the interview
           </button>
+          {import.meta.env.DEV && (
+            <button
+              onClick={skipInterview}
+              style={{
+                display: "block", margin: "16px auto 0",
+                background: "transparent", color: T.textSecondary,
+                border: `1px dashed ${T.divider}`, borderRadius: T.radiusSm,
+                padding: "8px 20px", fontWeight: 600, fontSize: 13,
+                cursor: "pointer", fontFamily: T.font,
+              }}
+            >
+              Skip interview (dev) — use sample manifest
+            </button>
+          )}
         </Card>
       </div>
     );
