@@ -20,13 +20,7 @@ router.post('/', (_req, res) => {
     "Hi! The Catch the Vibe assistant isn't available yet — it's coming soon. " +
     'In the meantime, head to "Build an App" to scope and provision a new repo.';
 
-  for (const word of message.split(' ')) {
-    res.write('event: content_block_delta\n');
-    res.write(`data: ${JSON.stringify({ delta: { text: word + ' ' } })}\n\n`);
-  }
-
-  res.write('event: message_stop\n');
-  res.write('data: {}\n\n');
+  res.write(`event: content_block_delta\ndata: ${JSON.stringify({ delta: { text: message } })}\n\n`);
   res.end();
 });
 
